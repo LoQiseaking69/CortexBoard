@@ -125,10 +125,14 @@ fun SysScreen(c: Cortex) {
                 NeonButton("IMPORT GGUF", Neon.Cyan) { importModel.launch(arrayOf("*/*")) }
             }
             if (!bundled) {
-                val downloading = engine is EngineState.Downloading
-                NeonButton(if (downloading) "DOWNLOADING…" else "DOWNLOAD MODEL (~640 MB)", Neon.Lime, enabled = !downloading,
+                val downloading = engine is EngineState.Downloading || c.engine.isDownloading
+                val have = remember(engine) { c.engine.hasDownloadedModel() }
+                if (!have) NeonButton(if (downloading) "DOWNLOADING…" else "DOWNLOAD MODEL (~640 MB)", Neon.Lime, enabled = !downloading,
                     modifier = Modifier.padding(top = 6.dp)) {
                     c.scope.launch { if (c.engine.downloadModel()) c.engine.ensureLoaded() }
+                }
+                else NeonChip("DELETE DOWNLOADED MODEL", accent = Neon.Red) {
+                    c.scope.launch { c.engine.deleteDownloadedModel() }
                 }
                 Text("source: ${BuildConfig.MODEL_URL.substringAfter("https://").substringBefore("/resolve")} · Wi-Fi recommended",
                     color = Neon.Faint, style = MaterialTheme.typography.labelSmall)

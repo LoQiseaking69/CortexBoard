@@ -125,7 +125,14 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
         }
         if (hasBundledModel()) return extractIfNeeded() to BuildConfig.MODEL_NAME
         val dl = downloadedModelFile()
-        if (dl.exists()) return dl to dl.nameWithoutExtension
+        if (dl.exists()) {
+            val expected = File(dl.path + ".size").takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull()
+            if (expected == null || expected != dl.length()) {
+                dl.delete(); File(dl.path + ".size").delete()
+                throw LlmException("downloaded model failed verification and was removed — tap DOWNLOAD MODEL again")
+            }
+            return dl to dl.nameWithoutExtension
+        }
         throw LlmException("No model on device. SYS → DOWNLOAD MODEL (~640 MB) or IMPORT GGUF.")
     }
 
@@ -133,11 +140,34 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
      * Lite builds: fetch the GGUF over HTTPS with resume support. Returns true on success.
      * Runs on IO; progress is published through [state].
      */
-    suspend fun downloadModel(url: String = BuildConfig.MODEL_URL): Boolean = withContext(Dispatchers.IO) {
+    private val downloadLock = Mutex()
+    val isDownloading: Boolean get() = downloadLock.isLocked
+    fun hasDownloadedModel(): Boolean = downloadedModelFile().exists()
+
+    /** Removes a downloaded model (e.g. a corrupt one) so it can be fetched again. */
+    suspend fun deleteDownloadedModel() {
+        unload()
+        withContext(Dispatchers.IO) {
+            val out = downloadedModelFile()
+            listOf(out, File(out.path + ".part"), File(out.path + ".size")).forEach { it.delete() }
+        }
+    }
+
+    suspend fun downloadModel(url: String = BuildConfig.MODEL_URL): Boolean {
+        // single-flight: a second tap while downloading is a no-op
+        if (!downloadLock.tryLock()) return false
+        try { return downloadLocked(url) } finally { downloadLock.unlock() }
+    }
+
+    private suspend fun downloadLocked(url: String): Boolean = withContext(Dispatchers.IO) {
         val out = downloadedModelFile()
         if (out.exists()) return@withContext true
-        out.parentFile?.mkdirs()
+        if (!(out.parentFile?.let { it.isDirectory || it.mkdirs() } ?: false)) {
+            _state.value = EngineState.Error("cannot create ${out.parentFile}")
+            return@withContext false
+        }
         val part = File(out.parentFile, out.name + ".part")
+        _state.value = EngineState.Downloading(0f, part.length() shr 20)
         try {
             var target = url
             var conn: java.net.HttpURLConnection
@@ -181,9 +211,13 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
                 }
             }
             conn.disconnect()
+            if (total > already && part.length() != total) {
+                throw LlmException("incomplete download (${part.length() shr 20}/${total shr 20} MB) — tap DOWNLOAD to resume")
+            }
             val magic = part.inputStream().use { s -> ByteArray(4).also { s.read(it) } }
             if (String(magic) != "GGUF") { part.delete(); throw LlmException("downloaded file is not GGUF") }
             if (!part.renameTo(out)) throw LlmException("could not finalize download")
+            File(out.path + ".size").writeText(out.length().toString())
             _state.value = EngineState.Idle
             true
         } catch (e: Throwable) {
