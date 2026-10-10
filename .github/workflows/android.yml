@@ -39,19 +39,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install SDK packages (platform, NDK, CMake)
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}" > /dev/null
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          .github/scripts/run.sh "$SDKM" --install "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Cache llama.cpp source
@@ -123,7 +123,7 @@ jobs:
       - name: Build release APK
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease \
+          .github/scripts/run.sh ./gradlew --no-daemon assembleRelease \
             -PmodelName="$MODEL_NAME" \
             -PversionName="${{ steps.ver.outputs.name }}" \
             -PversionCode="${GITHUB_RUN_NUMBER}" \
