@@ -12,9 +12,14 @@ import com.hermitech.cortexboard.ui.theme.CortexTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashGuard.pending(this)?.let { trace ->
+            CrashGuard.show(this, trace) { recreate() }
+            return
+        }
         enableEdgeToEdge()
-        handleShare(intent)
         val cortex = Cortex.get(this)
+        cortex.start()
+        handleShare(intent)
         setContent { CortexTheme { CortexRoot(cortex) } }
     }
 

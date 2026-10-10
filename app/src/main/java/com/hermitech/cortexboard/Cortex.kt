@@ -12,6 +12,7 @@ import com.hermitech.cortexboard.llm.LlamaEngine
 import com.hermitech.cortexboard.mcp.McpBridgeServer
 import com.hermitech.cortexboard.mcp.McpHub
 import com.hermitech.cortexboard.mcp.VaultMcpServer
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,7 +22,11 @@ import kotlinx.coroutines.launch
 
 /** Manual DI graph — no reflection, no codegen, tiny startup cost. */
 class Cortex(val app: Context) {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e ->
+        Log.e("Cortex", "background failure", e)
+        CrashGuard.record(app, "background", e)
+    })
+    @Volatile private var started = false
     val prefs = Prefs(app)
     val store = Store(app)
     val engine = LlamaEngine(app, prefs)
@@ -31,8 +36,11 @@ class Cortex(val app: Context) {
     val organizer = Organizer(engine, store, prefs)
     val bridge = McpBridgeServer(vault)
 
+    @Synchronized
     fun start() {
-        Organizer.schedule(app, prefs)
+        if (started) return
+        started = true
+        runCatching { Organizer.schedule(app, prefs) }.onFailure { CrashGuard.record(app, "organizer.schedule", it) }
         scope.launch {
             prefs.state.map { Triple(it.bridgeEnabled, it.bridgePort, it.bridgeToken) }.distinctUntilChanged()
                 .collect { (on, port, token) ->
@@ -65,6 +73,8 @@ class Cortex(val app: Context) {
 class CortexApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        Cortex.get(this).start()
+        CrashGuard.install(this)
+        // After a crash, stay in safe mode until the user has seen the report (MainActivity).
+        if (CrashGuard.pending(this) == null) Cortex.get(this).start()
     }
 }

@@ -8,6 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -30,7 +31,11 @@ private class CortexDb(ctx: Context) : SQLiteOpenHelper(ctx, "cortex.db", null, 
                 organized INTEGER NOT NULL DEFAULT 0)"""
         )
         db.execSQL("CREATE UNIQUE INDEX notes_title ON notes(title COLLATE NOCASE)")
-        db.execSQL("CREATE VIRTUAL TABLE notes_fts USING fts4(title, body, tags, tokenize=unicode61)")
+        try {
+            db.execSQL("CREATE VIRTUAL TABLE notes_fts USING fts4(title, body, tags, tokenize=unicode61)")
+        } catch (_: android.database.SQLException) {
+            db.execSQL("CREATE VIRTUAL TABLE notes_fts USING fts4(title, body, tags)") // older SQLite builds
+        }
         db.execSQL(
             """CREATE TABLE tasks(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
@@ -86,14 +91,16 @@ private class CortexDb(ctx: Context) : SQLiteOpenHelper(ctx, "cortex.db", null, 
 }
 
 /** Single source of truth. All writes bump [version], which re-runs every observing query. */
-class Store(context: Context) {
+class Store(private val context: Context) {
     private val helper = CortexDb(context.applicationContext)
     private val db: SQLiteDatabase get() = helper.writableDatabase
     private val version = MutableStateFlow(0L)
 
     private fun bump() { version.value = version.value + 1 }
 
-    fun <T> observe(block: () -> T): Flow<T> = version.map { block() }.flowOn(Dispatchers.IO)
+    fun <T> observe(block: () -> T): Flow<T> = version.map { block() }
+        .catch { e -> android.util.Log.e("Store", "query failed", e); com.hermitech.cortexboard.CrashGuard.record(context, "store", e) }
+        .flowOn(Dispatchers.IO)
 
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
