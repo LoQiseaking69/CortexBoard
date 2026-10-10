@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,6 +38,7 @@ object LlamaNative {
 sealed interface EngineState {
     data object Idle : EngineState
     data class Extracting(val progress: Float) : EngineState
+    data class Downloading(val progress: Float, val mb: Long) : EngineState
     data object Loading : EngineState
     data class Ready(val modelName: String, val nCtx: Int) : EngineState
     data class Busy(val modelName: String) : EngineState
@@ -107,14 +109,88 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
         return out
     }
 
+    private fun downloadedModelFile(): File =
+        File(context.filesDir, "models/download/" + BuildConfig.MODEL_URL.substringAfterLast('/').substringBefore('?'))
+
+    /** True when some model is available without a download (override, bundled, or already fetched). */
+    fun hasLocalModel(): Boolean =
+        prefs.value.modelPathOverride.let { it.isNotBlank() && File(it).exists() } ||
+            hasBundledModel() || downloadedModelFile().exists()
+
     private fun resolveModel(): Pair<File, String> {
         val override = prefs.value.modelPathOverride
         if (override.isNotBlank()) {
             val f = File(override)
             if (f.exists()) return f to f.nameWithoutExtension
         }
-        if (!hasBundledModel()) throw LlmException("No model bundled in this build. Import a .gguf in SYS.")
-        return extractIfNeeded() to BuildConfig.MODEL_NAME
+        if (hasBundledModel()) return extractIfNeeded() to BuildConfig.MODEL_NAME
+        val dl = downloadedModelFile()
+        if (dl.exists()) return dl to dl.nameWithoutExtension
+        throw LlmException("No model on device. SYS → DOWNLOAD MODEL (~640 MB) or IMPORT GGUF.")
+    }
+
+    /**
+     * Lite builds: fetch the GGUF over HTTPS with resume support. Returns true on success.
+     * Runs on IO; progress is published through [state].
+     */
+    suspend fun downloadModel(url: String = BuildConfig.MODEL_URL): Boolean = withContext(Dispatchers.IO) {
+        val out = downloadedModelFile()
+        if (out.exists()) return@withContext true
+        out.parentFile?.mkdirs()
+        val part = File(out.parentFile, out.name + ".part")
+        try {
+            var target = url
+            var conn: java.net.HttpURLConnection
+            var redirects = 0
+            while (true) { // follow redirects manually (HF resolve → CDN, cross-host)
+                conn = (java.net.URL(target).openConnection() as java.net.HttpURLConnection).apply {
+                    instanceFollowRedirects = false
+                    connectTimeout = 20_000
+                    readTimeout = 60_000
+                    setRequestProperty("User-Agent", "CortexBoard/${BuildConfig.VERSION_NAME}")
+                    if (part.exists() && part.length() > 0) setRequestProperty("Range", "bytes=${part.length()}-")
+                }
+                val code = conn.responseCode
+                if (code in 300..399 && redirects < 8) {
+                    target = java.net.URL(java.net.URL(target), conn.getHeaderField("Location")).toString()
+                    conn.disconnect(); redirects++; continue
+                }
+                if (code != 200 && code != 206) throw LlmException("download failed: HTTP $code")
+                break
+            }
+            val resumed = conn.responseCode == 206
+            if (!resumed) part.delete()
+            val already = if (resumed) part.length() else 0L
+            val total = already + conn.contentLengthLong.coerceAtLeast(0)
+            conn.inputStream.use { input ->
+                java.io.FileOutputStream(part, resumed).use { output ->
+                    val buf = ByteArray(1 shl 20)
+                    var done = already
+                    var lastReport = 0L
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        output.write(buf, 0, n)
+                        done += n
+                        if (done - lastReport > (4 shl 20)) {
+                            lastReport = done
+                            _state.value = EngineState.Downloading(if (total > 0) done.toFloat() / total else 0f, done shr 20)
+                        }
+                    }
+                }
+            }
+            conn.disconnect()
+            val magic = part.inputStream().use { s -> ByteArray(4).also { s.read(it) } }
+            if (String(magic) != "GGUF") { part.delete(); throw LlmException("downloaded file is not GGUF") }
+            if (!part.renameTo(out)) throw LlmException("could not finalize download")
+            _state.value = EngineState.Idle
+            true
+        } catch (e: Throwable) {
+            if (e is CancellationException) { _state.value = EngineState.Idle; throw e }
+            _state.value = EngineState.Error(e.message ?: e.javaClass.simpleName)
+            false
+        }
     }
 
     suspend fun ensureLoaded(): Boolean = withContext(llmThread) {

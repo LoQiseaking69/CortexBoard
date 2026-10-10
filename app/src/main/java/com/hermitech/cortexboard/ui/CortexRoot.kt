@@ -94,6 +94,7 @@ private fun TopBar(c: Cortex, tab: Tab) {
         val (label, color, busy) = when (val e = engine) {
             EngineState.Idle -> Triple("BRAIN IDLE", Neon.Dim, false)
             is EngineState.Extracting -> Triple("UNPACK ${(e.progress * 100).toInt()}%", Neon.Amber, true)
+            is EngineState.Downloading -> Triple("FETCH ${(e.progress * 100).toInt()}%", Neon.Amber, true)
             EngineState.Loading -> Triple("BOOTING", Neon.Amber, true)
             is EngineState.Ready -> Triple("ONLINE", Neon.Lime, false)
             is EngineState.Busy -> Triple("THINKING", Neon.Magenta, true)

@@ -65,33 +65,6 @@ jobs:
         if: steps.llama-cache.outputs.cache-hit != 'true'
         run: git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp.git third_party/llama.cpp
 
-      - name: Model cache key
-        id: model-key
-        run: echo "key=gguf-$(echo -n "$MODEL_URL" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache model weights
-        if: env.BUNDLE_MODEL == 'true'
-        id: model-cache
-        uses: actions/cache@v4
-        with:
-          path: app/src/main/assets/models/model.gguf
-          key: ${{ steps.model-key.outputs.key }}
-
-      - name: Download ${{ env.MODEL_NAME }}
-        if: env.BUNDLE_MODEL == 'true' && steps.model-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p app/src/main/assets/models
-          curl -L --fail --retry 4 --retry-delay 10 -o app/src/main/assets/models/model.gguf "$MODEL_URL"
-
-      - name: Verify GGUF
-        if: env.BUNDLE_MODEL == 'true'
-        run: |
-          f=app/src/main/assets/models/model.gguf
-          magic=$(head -c 4 "$f")
-          [ "$magic" = "GGUF" ] || { echo "::error::downloaded file is not GGUF"; exit 1; }
-          ls -lh "$f"
-          sha256sum "$f" | tee model.sha256
-
       - name: Release signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -133,7 +106,47 @@ jobs:
           echo "release=$release" >> "$GITHUB_OUTPUT"
           echo "Version $v (release=$release)"
 
-      - name: Build release APK
+      - name: Build lite APK
+        run: |
+          chmod +x gradlew
+          .github/scripts/run.sh ./gradlew --no-daemon assembleRelease \
+            -PmodelName="none" -PmodelUrl="$MODEL_URL" \
+            -PversionName="${{ steps.ver.outputs.name }}" \
+            -PversionCode="${GITHUB_RUN_NUMBER}" \
+            --stacktrace
+          out="dist/CortexBoard-${{ steps.ver.outputs.name }}-lite.apk"
+          mkdir -p dist && cp app/build/outputs/apk/release/app-release.apk "$out"
+          ls -lh "$out"
+
+      - name: Model cache key
+        id: model-key
+        run: echo "key=gguf-$(echo -n "$MODEL_URL" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache model weights
+        if: env.BUNDLE_MODEL == 'true'
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/models/model.gguf
+          key: ${{ steps.model-key.outputs.key }}
+
+      - name: Download ${{ env.MODEL_NAME }}
+        if: env.BUNDLE_MODEL == 'true' && steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p app/src/main/assets/models
+          curl -L --fail --retry 4 --retry-delay 10 -o app/src/main/assets/models/model.gguf "$MODEL_URL"
+
+      - name: Verify GGUF
+        if: env.BUNDLE_MODEL == 'true'
+        run: |
+          f=app/src/main/assets/models/model.gguf
+          magic=$(head -c 4 "$f")
+          [ "$magic" = "GGUF" ] || { echo "::error::downloaded file is not GGUF"; exit 1; }
+          ls -lh "$f"
+          sha256sum "$f" | tee model.sha256
+
+      - name: Build full (bundled model) APK
+        if: env.BUNDLE_MODEL == 'true'
         run: |
           chmod +x gradlew
           .github/scripts/run.sh ./gradlew --no-daemon assembleRelease \
@@ -141,30 +154,24 @@ jobs:
             -PversionName="${{ steps.ver.outputs.name }}" \
             -PversionCode="${GITHUB_RUN_NUMBER}" \
             --stacktrace
-
-      - name: Collect APK
-        id: apk
-        run: |
-          suffix=$([ "$BUNDLE_MODEL" = "true" ] && echo "$MODEL_NAME" || echo "lite")
-          out="CortexBoard-${{ steps.ver.outputs.name }}-${suffix}.apk"
-          cp app/build/outputs/apk/release/app-release.apk "$out"
-          sha256sum "$out" > "$out.sha256"
+          out="dist/CortexBoard-${{ steps.ver.outputs.name }}-${MODEL_NAME}.apk"
+          mkdir -p dist && cp app/build/outputs/apk/release/app-release.apk "$out"
           ls -lh "$out"
-          echo "file=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Checksums and summary
+        run: |
+          cd dist && sha256sum *.apk > SHA256SUMS && cat SHA256SUMS
           {
             echo "### CortexBoard ${{ steps.ver.outputs.name }}"
-            echo "- model: \`$suffix\`"
             echo "- llama.cpp: \`$LLAMA_TAG\`"
-            echo "- size: $(du -h "$out" | cut -f1)"
-            echo "- sha256: \`$(cut -d' ' -f1 "$out.sha256")\`"
+            echo "- lite: downloads ${MODEL_NAME} on first launch"
+            ls -lh *.apk | awk '{print "- " $9 ": " $5}'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.apk.outputs.file }}
-          path: |
-            ${{ steps.apk.outputs.file }}
-            ${{ steps.apk.outputs.file }}.sha256
+          name: CortexBoard-${{ steps.ver.outputs.name }}
+          path: dist/
           compression-level: 0
           retention-days: 14
 
@@ -175,7 +182,5 @@ jobs:
           tag_name: v${{ steps.ver.outputs.name }}
           target_commitish: ${{ github.sha }}
           name: CortexBoard ${{ steps.ver.outputs.name }}
-          files: |
-            ${{ steps.apk.outputs.file }}
-            ${{ steps.apk.outputs.file }}.sha256
+          files: dist/*
           generate_release_notes: true

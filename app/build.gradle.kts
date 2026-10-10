@@ -8,6 +8,9 @@ plugins {
 // CMake falls back to FetchContent at the same tag for local builds.
 val llamaTag = "b11549"
 val modelName: String = (project.findProperty("modelName") as String?) ?: "Qwen3-0.6B-Q8_0"
+// Used by builds without a bundled model (lite) to fetch weights on first launch.
+val modelUrl: String = (project.findProperty("modelUrl") as String?)
+    ?: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf"
 
 android {
     namespace = "com.hermitech.cortexboard"
@@ -23,6 +26,7 @@ android {
 
         buildConfigField("String", "MODEL_NAME", "\"$modelName\"")
         buildConfigField("String", "LLAMA_TAG", "\"$llamaTag\"")
+        buildConfigField("String", "MODEL_URL", "\"$modelUrl\"")
 
         ndk { abiFilters += listOf("arm64-v8a") }
 

@@ -106,6 +106,7 @@ fun SysScreen(c: Cortex) {
             val (label, color) = when (val e = engine) {
                 EngineState.Idle -> "idle (loads on first use)" to Neon.Dim
                 is EngineState.Extracting -> "unpacking weights ${(e.progress * 100).toInt()}%" to Neon.Amber
+                is EngineState.Downloading -> "downloading ${(e.progress * 100).toInt()}% · ${e.mb} MB" to Neon.Amber
                 EngineState.Loading -> "loading into RAM…" to Neon.Amber
                 is EngineState.Ready -> "online · ${e.modelName} · ctx ${e.nCtx}" to Neon.Lime
                 is EngineState.Busy -> "generating · ${e.modelName}" to Neon.Magenta
@@ -122,6 +123,15 @@ fun SysScreen(c: Cortex) {
                 NeonButton("UNLOAD", Neon.Dim) { scope.launch { c.engine.unload() } }
                 Spacer(Modifier.width(6.dp))
                 NeonButton("IMPORT GGUF", Neon.Cyan) { importModel.launch(arrayOf("*/*")) }
+            }
+            if (!bundled) {
+                val downloading = engine is EngineState.Downloading
+                NeonButton(if (downloading) "DOWNLOADING…" else "DOWNLOAD MODEL (~640 MB)", Neon.Lime, enabled = !downloading,
+                    modifier = Modifier.padding(top = 6.dp)) {
+                    c.scope.launch { if (c.engine.downloadModel()) c.engine.ensureLoaded() }
+                }
+                Text("source: ${BuildConfig.MODEL_URL.substringAfter("https://").substringBefore("/resolve")} · Wi-Fi recommended",
+                    color = Neon.Faint, style = MaterialTheme.typography.labelSmall)
             }
             if (s.modelPathOverride.isNotBlank()) NeonChip("USE BUNDLED MODEL", accent = Neon.Amber) {
                 c.prefs.update { it.copy(modelPathOverride = "") }; scope.launch { c.engine.unload() }
