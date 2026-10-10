@@ -79,9 +79,9 @@ fun MarkdownView(text: String, onLink: (String) -> Unit, onToggleCheck: ((Int) -
     }
 }
 
-private val CHECK = Regex("""^(\s*)[-*] \[( |x|X)] (.*)$""")
+private val CHECK = Regex("""^(\s*)[-*] \[( |x|X)\] (.*)$""")
 private val BULLET = Regex("""^(\s*)(?:[-*]|\d+\.) (.*)$""")
-private val INLINE = Regex("""\[\[([^\]|#]+)(?:[#|]([^\]]*))?]]|\*\*(.+?)\*\*|`([^`]+)`|\*(.+?)\*|(?<![\w/])#([A-Za-z][\w/-]+)""")
+private val INLINE = Regex("""\[\[([^\]|#]+)(?:[#|]([^\]]*))?\]\]|\*\*(.+?)\*\*|`([^`]+)`|\*(.+?)\*|(?<![\w/])#([A-Za-z][\w/-]+)""")
 
 fun inline(s: String, onLink: (String) -> Unit): AnnotatedString = buildAnnotatedString {
     var last = 0
@@ -113,7 +113,7 @@ fun toggleCheckbox(body: String, lineIndex: Int): String {
     lines[lineIndex] = when {
         l.contains("- [ ] ") -> l.replaceFirst("- [ ] ", "- [x] ")
         l.contains("* [ ] ") -> l.replaceFirst("* [ ] ", "* [x] ")
-        else -> l.replaceFirst(Regex("""([-*]) \[[xX]] """), "$1 [ ] ")
+        else -> l.replaceFirst(Regex("""([-*]) \[[xX]\] """), "$1 [ ] ")
     }
     return lines.joinToString("\n")
 }

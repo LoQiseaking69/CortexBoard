@@ -103,7 +103,7 @@ For each function call, return a json object with function name and arguments wi
     companion object {
         const val MAX_STEPS = 6
         const val MAX_TOOL_CHARS = 2400
-        private val CALL = Regex("<tool_call>\\s*(\\{.*?})\\s*(</tool_call>|$)", RegexOption.DOT_MATCHES_ALL)
+        private val CALL = Regex("<tool_call>\\s*(\\{.*?\\})\\s*(</tool_call>|$)", RegexOption.DOT_MATCHES_ALL)
         private val CALL_BLOCK = Regex("<tool_call>.*?(</tool_call>|$)", RegexOption.DOT_MATCHES_ALL)
 
         fun visible(raw: String): String = ChatML.stripThinking(raw).replace(CALL_BLOCK, "").trim()

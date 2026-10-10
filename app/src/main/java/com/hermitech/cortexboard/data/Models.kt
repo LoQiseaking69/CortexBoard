@@ -50,7 +50,7 @@ data class McpServerConfig(
 )
 
 object WikiLinks {
-    private val LINK = Regex("""\[\[([^\]|#]+)(?:[#|][^\]]*)?]]""")
+    private val LINK = Regex("""\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]""")
     private val TAG = Regex("""(?<![\w/])#([A-Za-z][\w/-]{1,40})""")
 
     fun links(body: String): List<String> =
