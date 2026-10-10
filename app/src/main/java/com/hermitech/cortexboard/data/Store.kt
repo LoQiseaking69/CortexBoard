@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-private class CortexDb(ctx: Context) : SQLiteOpenHelper(ctx, "cortex.db", null, 1) {
+private class CortexDb(ctx: Context) : SQLiteOpenHelper(ctx, "cortex.db", null, 2) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.enableWriteAheadLogging()
         db.setForeignKeyConstraintsEnabled(true)
@@ -57,6 +57,7 @@ private class CortexDb(ctx: Context) : SQLiteOpenHelper(ctx, "cortex.db", null, 
                 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT NOT NULL,
                 token TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1)"""
         )
+        createChat(db)
         db.execSQL("INSERT INTO boards(name) VALUES('OPS')")
         val now = System.currentTimeMillis()
         val welcome = ContentValues().apply {
@@ -73,7 +74,17 @@ private class CortexDb(ctx: Context) : SQLiteOpenHelper(ctx, "cortex.db", null, 
         )
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) createChat(db)
+    }
+
+    private fun createChat(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS chat(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL,
+                content TEXT NOT NULL, meta TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL)"""
+        )
+    }
 
     companion object {
         val WELCOME = """
@@ -150,6 +161,85 @@ class Store(private val context: Context) {
         val byId = notesWhere("id IN (${ids.joinToString(",")})", emptyArray()).associateBy { it.id }
         return ids.mapNotNull { byId[it] }
     }
+
+    private val STOP = setOf(
+        "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "is", "are", "was", "be", "it", "this",
+        "that", "my", "me", "i", "you", "what", "how", "about", "do", "does", "did", "can", "could", "should", "would",
+        "from", "at", "by", "as", "all", "any", "some", "please", "tell", "show", "find", "make", "create", "list",
+        "note", "notes", "task", "tasks", "board", "today", "now", "then", "there", "have", "has", "had", "will",
+    )
+
+    /**
+     * Relevance search for natural-language questions: OR across keywords, then ranked in Kotlin
+     * by title hits (x3), tag hits (x2) and body hits. Used for retrieval-augmented prompts.
+     */
+    fun searchAnySync(query: String, limit: Int = 4): List<Note> {
+        val terms = query.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").split(' ')
+            .filter { it.length > 2 && it !in STOP }.distinct().take(8)
+        if (terms.isEmpty()) return emptyList()
+        val match = terms.joinToString(" OR ") { "$it*" }
+        val ids = try {
+            db.rawQuery("SELECT docid FROM notes_fts WHERE notes_fts MATCH ? LIMIT 40", arrayOf(match))
+                .use { c -> buildList<Long> { while (c.moveToNext()) add(c.getLong(0)) } }
+        } catch (_: android.database.sqlite.SQLiteException) { return emptyList() }
+        if (ids.isEmpty()) return emptyList()
+        return notesWhere("id IN (${ids.joinToString(",")})", emptyArray()).map { n ->
+            val t = n.title.lowercase(); val b = n.body.lowercase()
+            n to terms.sumOf { term ->
+                (if (t.contains(term)) 3 else 0) + (if (n.tags.any { it.startsWith(term) }) 2 else 0) +
+                    occurrences(b, term, 5)
+            }
+        }.sortedByDescending { it.second }.take(limit).map { it.first }
+    }
+
+    private fun occurrences(hay: String, needle: String, cap: Int): Int {
+        var n = 0; var i = hay.indexOf(needle)
+        while (i >= 0 && n < cap) { n++; i = hay.indexOf(needle, i + needle.length) }
+        return n
+    }
+
+    data class VaultStats(val notes: Int, val openTasks: Int, val dueToday: Int, val overdue: Int, val unsorted: Int)
+
+    fun statsSync(): VaultStats {
+        fun count(sql: String, vararg a: String) = db.rawQuery(sql, a).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+        val today = LocalDate.now().toEpochDay().toString()
+        return VaultStats(
+            notes = count("SELECT COUNT(*) FROM notes"),
+            openTasks = count("SELECT COUNT(*) FROM tasks WHERE done = 0"),
+            dueToday = count("SELECT COUNT(*) FROM tasks WHERE done = 0 AND due = ?", today),
+            overdue = count("SELECT COUNT(*) FROM tasks WHERE done = 0 AND due < ?", today),
+            unsorted = count("SELECT COUNT(*) FROM notes WHERE organized = 0"),
+        )
+    }
+
+    fun stats(): Flow<VaultStats> = observe { statsSync() }
+
+    data class GraphData(val nodes: List<Pair<Long, String>>, val edges: List<Pair<Long, Long>>, val folders: Map<Long, String>)
+
+    /** Wikilink graph: nodes are notes, edges are resolved [[links]]. */
+    fun graph(): Flow<GraphData> = observe {
+        val notes = notesSync(limit = 400)
+        val byTitle = notes.associateBy { it.title.lowercase() }
+        val edges = notes.flatMap { n ->
+            WikiLinks.links(n.body).mapNotNull { byTitle[it.lowercase()]?.id }.filter { it != n.id }.map { n.id to it }
+        }.distinct()
+        GraphData(notes.map { it.id to it.title }, edges, notes.associate { it.id to it.folder })
+    }
+
+    // ---------------------------------------------------------------- chat
+    data class ChatRow(val id: Long, val role: String, val content: String, val meta: String)
+
+    fun chatSync(limit: Int = 200): List<ChatRow> =
+        db.rawQuery("SELECT id, role, content, meta FROM (SELECT * FROM chat ORDER BY id DESC LIMIT $limit) ORDER BY id", null)
+            .use { c -> buildList<ChatRow> { while (c.moveToNext()) add(ChatRow(c.getLong(0), c.getString(1), c.getString(2), c.getString(3))) } }
+
+    suspend fun addChat(role: String, content: String, meta: String = "") = io {
+        db.insert("chat", null, ContentValues().apply {
+            put("role", role); put("content", content); put("meta", meta); put("created", System.currentTimeMillis())
+        })
+    }
+
+    suspend fun clearChat() = io { db.delete("chat", null, null) }
 
     fun noteFlow(id: Long): Flow<Note?> = observe { noteSync(id) }
     fun noteSync(id: Long): Note? = notesWhere("id = ?", arrayOf(id.toString()), limit = 1).firstOrNull()

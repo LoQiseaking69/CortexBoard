@@ -13,9 +13,10 @@ A slim, cyber-themed, local-first notes + lists + kanban app for Android with a 
 | **VAULT** | Markdown notes, `[[wikilinks]]` with backlinks + outbound links, inline `#tags`, folders, pins, FTS4 full-text search, quick capture, share-to-capture |
 | **TASKS** | Lists, priorities (`!0-3`), `@list` inline syntax, due dates, task ↔ note links, AI-extracted tasks |
 | **BOARD** | Multiple kanban boards (TODO / DOING / DONE) |
-| **BRAIN** | Agent chat with live tool-call trace. Searches, reads, writes notes, manages tasks and boards, logs to your daily note |
-| **NEURAL OPS** | Per-note: organize, summarize, clean, expand, next steps |
-| **SYS** | Model status/boot/unload, import any `.gguf`, ctx/threads/temp, Qwen3 reasoning toggle, auto-organizer schedule, MCP bridge, remote MCP uplinks, vault export (Obsidian-compatible markdown zip) |
+| **BRAIN** | Agent chat grounded in your vault (auto-retrieval of relevant notes + open tasks), live MCP tool trace, quick actions (brief, plan today, board it, link notes, weekly), persistent history, tok/s stats |
+| **GRAPH** | Obsidian-style wikilink graph — force layout, pinch-zoom, tap to open, coloured by folder |
+| **NEURAL OPS** | Per-note: organize (folder, tags, summary, links, tasks, auto-title for captures), summarize, clean, expand, next steps, continue writing, questions |
+| **SYS** | Model library (Qwen3 0.6B / 1.7B / 4B — download, switch, delete), warm-up at launch, retrieval toggle, import any `.gguf`, ctx/threads/temp, Qwen3 reasoning toggle, auto-organizer schedule, MCP bridge, remote MCP uplinks, vault export (Obsidian-compatible markdown zip) |
 
 ## Architecture
 

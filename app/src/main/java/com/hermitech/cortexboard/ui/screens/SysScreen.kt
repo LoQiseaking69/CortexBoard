@@ -42,6 +42,7 @@ import com.hermitech.cortexboard.agent.Organizer
 import com.hermitech.cortexboard.data.McpServerConfig
 import com.hermitech.cortexboard.data.Prefs
 import com.hermitech.cortexboard.llm.EngineState
+import com.hermitech.cortexboard.llm.LlamaEngine
 import com.hermitech.cortexboard.ui.Glyph
 import com.hermitech.cortexboard.ui.KeyValue
 import com.hermitech.cortexboard.ui.NeonButton
@@ -67,6 +68,7 @@ fun SysScreen(c: Cortex) {
     val scope = rememberCoroutineScope()
     var importing by remember { mutableStateOf<String?>(null) }
     val bundled = remember { c.engine.hasBundledModel() }
+    var downloadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     val importModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -124,23 +126,43 @@ fun SysScreen(c: Cortex) {
                 Spacer(Modifier.width(6.dp))
                 NeonButton("IMPORT GGUF", Neon.Cyan) { importModel.launch(arrayOf("*/*")) }
             }
-            if (!bundled) {
-                val downloading = engine is EngineState.Downloading || c.engine.isDownloading
-                val have = remember(engine) { c.engine.hasDownloadedModel() }
-                if (!have) NeonButton(if (downloading) "DOWNLOADING…" else "DOWNLOAD MODEL (~640 MB)", Neon.Lime, enabled = !downloading,
-                    modifier = Modifier.padding(top = 6.dp)) {
-                    c.scope.launch { if (c.engine.downloadModel()) c.engine.ensureLoaded() }
-                }
-                else NeonChip("DELETE DOWNLOADED MODEL", accent = Neon.Red) {
-                    c.scope.launch { c.engine.deleteDownloadedModel() }
-                }
-                Text("source: ${BuildConfig.MODEL_URL.substringAfter("https://").substringBefore("/resolve")} · Wi-Fi recommended",
-                    color = Neon.Faint, style = MaterialTheme.typography.labelSmall)
-            }
-            if (s.modelPathOverride.isNotBlank()) NeonChip("USE BUNDLED MODEL", accent = Neon.Amber) {
+            if (s.modelPathOverride.isNotBlank() && bundled) NeonChip("USE BUNDLED MODEL", accent = Neon.Amber) {
                 c.prefs.update { it.copy(modelPathOverride = "") }; scope.launch { c.engine.unload() }
             }
         }
+
+        // ------------------------------------------------------------ model library
+        SectionHeader("MODEL LIBRARY · QWEN3", Neon.Lime, Modifier.padding(top = 10.dp))
+        val downloadingId by c.engine.downloadingId.collectAsState()
+        LlamaEngine.PRESETS.forEach { p ->
+            val have = remember(engine, downloadingId) { c.engine.isDownloaded(p) }
+            val active = s.modelPathOverride == c.engine.presetFile(p).absolutePath ||
+                (!bundled && s.modelPathOverride.isBlank() && have && p.url == BuildConfig.MODEL_URL)
+            val busy = downloadingId == p.id
+            NeonPanel(Modifier.fillMaxWidth().padding(vertical = 3.dp), accent = if (active) Neon.Lime else Neon.Faint) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text((if (active) "● " else "") + p.label, color = if (active) Neon.Lime else Neon.Text,
+                            style = MaterialTheme.typography.titleSmall)
+                        Text("${p.sizeMb} MB · ${p.note}", color = Neon.Dim, style = MaterialTheme.typography.bodySmall)
+                        if (busy) (engine as? EngineState.Downloading)?.let { d ->
+                            Text("downloading ${(d.progress * 100).toInt()}% · ${d.mb} MB", color = Neon.Amber,
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    when {
+                        busy -> NeonChip("■ STOP", accent = Neon.Red) { downloadJob?.cancel() }
+                        !have -> NeonChip("⇩ GET", accent = Neon.Lime) {
+                            if (downloadingId == null) downloadJob = c.scope.launch { if (c.engine.downloadModel(p)) c.engine.ensureLoaded() }
+                        }
+                        !active -> NeonChip("USE", accent = Neon.Cyan) { scope.launch { c.engine.activate(p); c.engine.ensureLoaded() } }
+                    }
+                    if (have && !busy) Glyph("✕", Neon.Red) { scope.launch { c.engine.deletePreset(p) } }
+                }
+            }
+        }
+        Text("Wi-Fi recommended · downloads resume if interrupted · bigger = smarter tool use, slower",
+            color = Neon.Faint, style = MaterialTheme.typography.labelSmall)
 
         SectionHeader("INFERENCE", Neon.Cyan, Modifier.padding(top = 10.dp))
         NeonPanel(Modifier.fillMaxWidth()) {
@@ -153,6 +175,8 @@ fun SysScreen(c: Cortex) {
             Text("max output tokens", color = Neon.Dim, style = MaterialTheme.typography.labelSmall)
             LazyRow { listOf(256, 512, 768, 1024, 2048).forEach { n -> item { NeonChip("$n", s.maxTokens == n) { c.prefs.update { it.copy(maxTokens = n) } } } } }
             ToggleRow("reasoning mode (qwen3 <think>)", s.thinking) { v -> c.prefs.update { it.copy(thinking = v) } }
+            ToggleRow("ground answers in vault (auto-retrieval)", s.retrieval) { v -> c.prefs.update { it.copy(retrieval = v) } }
+            ToggleRow("warm up model at launch", s.preloadModel) { v -> c.prefs.update { it.copy(preloadModel = v) } }
             Text("ctx/thread changes apply on next BOOT", color = Neon.Faint, style = MaterialTheme.typography.labelSmall)
         }
 

@@ -29,6 +29,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hermitech.cortexboard.Cortex
 import com.hermitech.cortexboard.data.Note
+import com.hermitech.cortexboard.data.Store
+import com.hermitech.cortexboard.ui.ChipShape
+import com.hermitech.cortexboard.ui.GraphView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.hermitech.cortexboard.ui.NeonButton
 import com.hermitech.cortexboard.ui.NeonChip
 import com.hermitech.cortexboard.ui.NeonPanel
@@ -47,6 +56,8 @@ fun VaultScreen(c: Cortex, onOpen: (Long) -> Unit) {
     var tag by rememberSaveable { mutableStateOf<String?>(null) }
     var capture by rememberSaveable { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
+    var graph by rememberSaveable { mutableStateOf(false) }
+    val stats by remember { c.store.stats() }.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
 
     val notesFlow = remember(query, folder, tag) { c.store.notes(query, folder, tag) }
@@ -55,6 +66,9 @@ fun VaultScreen(c: Cortex, onOpen: (Long) -> Unit) {
     val pending = notes.count { !it.organized }
 
     Column(Modifier.fillMaxSize()) {
+        Spacer(Modifier.padding(top = 8.dp))
+        stats?.let { st -> StatsStrip(st,
+            onDaily = { scope.launch { onOpen(withContext(Dispatchers.IO) { c.store.dailyNoteSync().id }) } }) }
         Spacer(Modifier.padding(top = 8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             TermField(capture, { capture = it }, "⚡ capture a thought → AI files it", Modifier.weight(1f), accent = Neon.Magenta,
@@ -78,6 +92,7 @@ fun VaultScreen(c: Cortex, onOpen: (Long) -> Unit) {
             items(facets.second) { t -> NeonChip("#$t", tag == t, Neon.Magenta) { tag = if (tag == t) null else t } }
         }
         SectionHeader("${notes.size} NODES" + if (pending > 0) " · $pending UNSORTED" else "", trailing = {
+            NeonChip(if (graph) "▤ LIST" else "⌬ GRAPH", graph, Neon.Cyan) { graph = !graph }
             if (pending > 0) NeonButton(status ?: "ORGANIZE", Neon.Lime) {
                 status = "…"
                 scope.launch {
@@ -86,6 +101,12 @@ fun VaultScreen(c: Cortex, onOpen: (Long) -> Unit) {
                 }
             }
         })
+        if (graph) {
+            NeonPanel(Modifier.fillMaxSize().padding(bottom = 8.dp), accent = Neon.Cyan) {
+                GraphView(c, onOpen = onOpen, modifier = Modifier.fillMaxSize())
+            }
+            return@Column
+        }
         LazyColumn(
             Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -93,6 +114,38 @@ fun VaultScreen(c: Cortex, onOpen: (Long) -> Unit) {
         ) {
             items(notes, key = { it.id }) { n -> NoteRow(n) { onOpen(n.id) } }
         }
+    }
+}
+
+@Composable
+private fun StatsStrip(st: Store.VaultStats, onDaily: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Stat("NODES", "${st.notes}", Neon.Cyan, Modifier.weight(1f))
+        Stat("OPEN", "${st.openTasks}", Neon.Lime, Modifier.weight(1f))
+        Stat("DUE", "${st.dueToday}", Neon.Amber, Modifier.weight(1f))
+        Stat("LATE", "${st.overdue}", if (st.overdue > 0) Neon.Red else Neon.Dim, Modifier.weight(1f))
+        Box(
+            Modifier.weight(1.2f).border(1.dp, Neon.Magenta, ChipShape).background(Neon.Magenta.copy(alpha = 0.12f), ChipShape)
+                .clickable(onClick = onDaily).padding(vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("☀", color = Neon.Magenta, style = MaterialTheme.typography.titleMedium)
+                Text("DAILY", color = Neon.Magenta, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Stat(label: String, value: String, color: Color, modifier: Modifier) {
+    Column(
+        modifier.border(1.dp, color.copy(alpha = 0.45f), ChipShape).background(Neon.Panel.copy(alpha = 0.9f), ChipShape)
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(value, color = color, style = MaterialTheme.typography.titleMedium)
+        Text(label, color = Neon.Dim, style = MaterialTheme.typography.labelSmall)
     }
 }
 

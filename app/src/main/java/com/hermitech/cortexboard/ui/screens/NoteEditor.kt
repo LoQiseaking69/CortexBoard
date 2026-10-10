@@ -27,6 +27,11 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import com.hermitech.cortexboard.ui.ChipShape
 import androidx.compose.ui.unit.dp
 import com.hermitech.cortexboard.Cortex
 import com.hermitech.cortexboard.agent.Organizer
@@ -54,6 +59,22 @@ fun NoteEditor(c: Cortex, id: Long, onBack: () -> Unit, onOpen: (Long) -> Unit) 
     var loaded by remember(id) { mutableStateOf(false) }
     var title by remember(id) { mutableStateOf("") }
     var body by remember(id) { mutableStateOf("") }
+    // editor value keeps cursor/IME composition; [body] stays the source of truth for saves & AI ops
+    var tfv by remember(id) { mutableStateOf(TextFieldValue("")) }
+    LaunchedEffect(body) { if (tfv.text != body) tfv = TextFieldValue(body, TextRange(body.length)) }
+
+    fun insert(prefix: String, suffix: String = "", linePrefix: Boolean = false) {
+        val t = tfv.text
+        val s0 = tfv.selection.min.coerceIn(0, t.length); val e0 = tfv.selection.max.coerceIn(0, t.length)
+        if (linePrefix) {
+            val ls = t.lastIndexOf('\n', (s0 - 1).coerceAtLeast(0)).let { if (s0 == 0 || it < 0) 0 else it + 1 }
+            val nt = t.substring(0, ls) + prefix + t.substring(ls)
+            tfv = TextFieldValue(nt, TextRange(s0 + prefix.length)); body = nt
+        } else {
+            val nt = t.substring(0, s0) + prefix + t.substring(s0, e0) + suffix + t.substring(e0)
+            tfv = TextFieldValue(nt, TextRange(if (s0 == e0) s0 + prefix.length else e0 + prefix.length + suffix.length)); body = nt
+        }
+    }
     var folder by remember(id) { mutableStateOf("") }
     var tags by remember(id) { mutableStateOf("") }
     var preview by remember(id) { mutableStateOf(false) }
@@ -133,8 +154,31 @@ fun NoteEditor(c: Cortex, id: Long, onBack: () -> Unit, onOpen: (Long) -> Unit) 
                 MarkdownView(body, onLink = ::openLink, onToggleCheck = { idx -> body = toggleCheckbox(body, idx) })
             }
         } else {
-            TermField(body, { body = it }, "markdown… [[link]] #tag - [ ] task", Modifier.fillMaxWidth().heightIn(min = 280.dp),
-                singleLine = false, minLines = 12)
+            LazyRow(Modifier.padding(bottom = 6.dp)) {
+                listOf(
+                    "H" to { insert("## ", linePrefix = true) }, "☐" to { insert("- [ ] ", linePrefix = true) },
+                    "•" to { insert("- ", linePrefix = true) }, "B" to { insert("**", "**") }, "`" to { insert("`", "`") },
+                    "[[ ]]" to { insert("[[", "]]") }, "#" to { insert("#") }, "❝" to { insert("> ", linePrefix = true) },
+                    "—" to { insert("\n---\n") }, "⏱" to { insert(java.time.LocalTime.now().withSecond(0).withNano(0).toString() + " ") },
+                ).forEach { (label, action) -> item { NeonChip(label, accent = Neon.Cyan, onClick = action) } }
+            }
+            OutlinedTextField(
+                value = tfv,
+                onValueChange = { tfv = it; if (it.text != body) body = it.text },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 280.dp),
+                minLines = 12,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                placeholder = { Text("markdown… [[link]] #tag - [ ] task", color = Neon.Dim, style = MaterialTheme.typography.bodyMedium) },
+                shape = ChipShape,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Neon.Cyan, unfocusedBorderColor = Neon.Faint, cursorColor = Neon.Cyan,
+                    focusedTextColor = Neon.Text, unfocusedTextColor = Neon.Text,
+                    focusedContainerColor = Neon.Panel.copy(alpha = 0.9f), unfocusedContainerColor = Neon.Panel.copy(alpha = 0.7f),
+                ),
+            )
+            val words = remember(body) { body.split(Regex("\\s+")).count { it.isNotBlank() } }
+            Text("$words words · ${WikiLinks.links(body).size} links", color = Neon.Faint, style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(top = 4.dp))
         }
         Row(Modifier.padding(top = 8.dp)) {
             TermField(folder, { folder = it }, "folder", Modifier.weight(1f))
@@ -166,6 +210,8 @@ fun NoteEditor(c: Cortex, id: Long, onBack: () -> Unit, onOpen: (Long) -> Unit) 
             item { NeonChip(if (busy == "CLN") "…" else "⌁ CLEAN", accent = Neon.Magenta) { runAi("CLN", Organizer.Transform.CLEAN) } }
             item { NeonChip(if (busy == "EXP") "…" else "⇲ EXPAND", accent = Neon.Magenta) { runAi("EXP", Organizer.Transform.EXPAND) } }
             item { NeonChip(if (busy == "NXT") "…" else "☐ NEXT STEPS", accent = Neon.Magenta) { runAi("NXT", Organizer.Transform.NEXT_STEPS) } }
+            item { NeonChip(if (busy == "CNT") "…" else "✦ CONTINUE", accent = Neon.Magenta) { runAi("CNT", Organizer.Transform.CONTINUE) } }
+            item { NeonChip(if (busy == "QST") "…" else "? QUESTIONS", accent = Neon.Magenta) { runAi("QST", Organizer.Transform.QUESTIONS) } }
         }
 
         SectionHeader("BACKLINKS · ${backlinks.size}", Neon.Cyan, Modifier.padding(top = 10.dp))

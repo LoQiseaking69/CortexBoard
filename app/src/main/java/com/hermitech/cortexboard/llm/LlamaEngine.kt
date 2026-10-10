@@ -55,6 +55,8 @@ data class GenParams(
 
 class LlmException(msg: String) : Exception(msg)
 
+data class GenStats(val promptChars: Int, val tokens: Int, val firstTokenMs: Long, val tokensPerSec: Float)
+
 /**
  * Owns the single llama.cpp session. All native calls are serialized through [lock]
  * on a dedicated single thread, so callers can be any coroutine.
@@ -71,6 +73,9 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
     private var nativeReady = false
 
     val isReady: Boolean get() = handle != 0L
+    private val _stats = MutableStateFlow<GenStats?>(null)
+    /** Throughput of the most recent generation, for the UI. */
+    val stats: StateFlow<GenStats?> = _stats
 
     private fun bundledModelFile(): File = File(context.filesDir, "models/${BuildConfig.MODEL_NAME}.gguf")
 
@@ -109,59 +114,83 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
         return out
     }
 
-    private fun downloadedModelFile(): File =
-        File(context.filesDir, "models/download/" + BuildConfig.MODEL_URL.substringAfterLast('/').substringBefore('?'))
+    /** Downloadable Qwen3 builds. All are official Qwen GGUF releases on Hugging Face. */
+    data class ModelPreset(val id: String, val label: String, val url: String, val sizeMb: Int, val note: String) {
+        val fileName: String get() = url.substringAfterLast('/').substringBefore('?')
+    }
+
+    private fun downloadDir() = File(context.filesDir, "models/download")
+    fun presetFile(p: ModelPreset): File = File(downloadDir(), p.fileName)
+    private fun defaultPreset(): ModelPreset =
+        PRESETS.firstOrNull { it.url == BuildConfig.MODEL_URL } ?: ModelPreset("default", "Default", BuildConfig.MODEL_URL, 640, "")
+
+    /** A downloaded file is trusted only if its recorded size matches. */
+    private fun verified(f: File): Boolean {
+        if (!f.exists()) return false
+        val expected = File(f.path + ".size").takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull()
+        return expected != null && expected == f.length()
+    }
+
+    fun isDownloaded(p: ModelPreset): Boolean = verified(presetFile(p))
+    fun hasDownloadedModel(): Boolean = isDownloaded(defaultPreset())
+
+    /** Path of the model that will be used, for UI. */
+    fun activeModelPath(): String = prefs.value.modelPathOverride.ifBlank { if (hasBundledModel()) "bundled" else presetFile(defaultPreset()).path }
 
     /** True when some model is available without a download (override, bundled, or already fetched). */
     fun hasLocalModel(): Boolean =
         prefs.value.modelPathOverride.let { it.isNotBlank() && File(it).exists() } ||
-            hasBundledModel() || downloadedModelFile().exists()
+            hasBundledModel() || downloadDir().listFiles()?.any { it.name.endsWith(".gguf") && verified(it) } == true
 
     private fun resolveModel(): Pair<File, String> {
         val override = prefs.value.modelPathOverride
         if (override.isNotBlank()) {
             val f = File(override)
-            if (f.exists()) return f to f.nameWithoutExtension
+            if (f.exists() && (f.parentFile != downloadDir() || verified(f))) return f to f.nameWithoutExtension
         }
         if (hasBundledModel()) return extractIfNeeded() to BuildConfig.MODEL_NAME
-        val dl = downloadedModelFile()
-        if (dl.exists()) {
-            val expected = File(dl.path + ".size").takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull()
-            if (expected == null || expected != dl.length()) {
-                dl.delete(); File(dl.path + ".size").delete()
-                throw LlmException("downloaded model failed verification and was removed — tap DOWNLOAD MODEL again")
-            }
-            return dl to dl.nameWithoutExtension
-        }
-        throw LlmException("No model on device. SYS → DOWNLOAD MODEL (~640 MB) or IMPORT GGUF.")
+        val any = downloadDir().listFiles()?.filter { it.name.endsWith(".gguf") && verified(it) }?.maxByOrNull { it.lastModified() }
+        if (any != null) return any to any.nameWithoutExtension
+        downloadDir().listFiles()?.filter { it.name.endsWith(".gguf") }?.forEach { it.delete() } // unverified leftovers
+        throw LlmException("No model on device. SYS → pick a model → DOWNLOAD, or IMPORT GGUF.")
     }
 
-    /**
-     * Lite builds: fetch the GGUF over HTTPS with resume support. Returns true on success.
-     * Runs on IO; progress is published through [state].
-     */
     private val downloadLock = Mutex()
     val isDownloading: Boolean get() = downloadLock.isLocked
-    fun hasDownloadedModel(): Boolean = downloadedModelFile().exists()
+    private val _downloadingId = MutableStateFlow<String?>(null)
+    val downloadingId: StateFlow<String?> = _downloadingId
 
-    /** Removes a downloaded model (e.g. a corrupt one) so it can be fetched again. */
-    suspend fun deleteDownloadedModel() {
+    /** Makes a downloaded preset the active model (reloads on next use). */
+    suspend fun activate(p: ModelPreset) {
+        prefs.update { it.copy(modelPathOverride = presetFile(p).absolutePath) }
         unload()
-        withContext(Dispatchers.IO) {
-            val out = downloadedModelFile()
-            listOf(out, File(out.path + ".part"), File(out.path + ".size")).forEach { it.delete() }
+    }
+
+    suspend fun deletePreset(p: ModelPreset) {
+        val f = presetFile(p)
+        if (prefs.value.modelPathOverride == f.absolutePath) prefs.update { it.copy(modelPathOverride = "") }
+        unload()
+        withContext(Dispatchers.IO) { listOf(f, File(f.path + ".part"), File(f.path + ".size")).forEach { it.delete() } }
+    }
+
+    suspend fun deleteDownloadedModel() = deletePreset(defaultPreset())
+
+    /** Downloads (with resume) and activates a preset. Single-flight: returns false if one is running. */
+    suspend fun downloadModel(p: ModelPreset = defaultPreset()): Boolean {
+        if (!downloadLock.tryLock()) return false
+        _downloadingId.value = p.id
+        try {
+            val ok = downloadLocked(p.url, presetFile(p))
+            if (ok) activate(p)
+            return ok
+        } finally {
+            _downloadingId.value = null
+            downloadLock.unlock()
         }
     }
 
-    suspend fun downloadModel(url: String = BuildConfig.MODEL_URL): Boolean {
-        // single-flight: a second tap while downloading is a no-op
-        if (!downloadLock.tryLock()) return false
-        try { return downloadLocked(url) } finally { downloadLock.unlock() }
-    }
-
-    private suspend fun downloadLocked(url: String): Boolean = withContext(Dispatchers.IO) {
-        val out = downloadedModelFile()
-        if (out.exists()) return@withContext true
+    private suspend fun downloadLocked(url: String, out: File): Boolean = withContext(Dispatchers.IO) {
+        if (verified(out)) return@withContext true
         if (!(out.parentFile?.let { it.isDirectory || it.mkdirs() } ?: false)) {
             _state.value = EngineState.Error("cannot create ${out.parentFile}")
             return@withContext false
@@ -185,6 +214,7 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
                     target = java.net.URL(java.net.URL(target), conn.getHeaderField("Location")).toString()
                     conn.disconnect(); redirects++; continue
                 }
+                if (code == 416) { conn.disconnect(); part.delete(); throw LlmException("stale partial file reset — tap DOWNLOAD again") }
                 if (code != 200 && code != 206) throw LlmException("download failed: HTTP $code")
                 break
             }
@@ -216,6 +246,7 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
             }
             val magic = part.inputStream().use { s -> ByteArray(4).also { s.read(it) } }
             if (String(magic) != "GGUF") { part.delete(); throw LlmException("downloaded file is not GGUF") }
+            out.delete()
             if (!part.renameTo(out)) throw LlmException("could not finalize download")
             File(out.path + ".size").writeText(out.length().toString())
             _state.value = EngineState.Idle
@@ -281,18 +312,25 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
                 val name = (ready as? EngineState.Ready)?.modelName ?: BuildConfig.MODEL_NAME
                 _state.value = EngineState.Busy(name)
                 val sb = StringBuilder()
+                val t0 = System.nanoTime()
+                var tFirst = 0L
                 try {
                     val rc = LlamaNative.nativeGenerate(
                         handle, prompt.toByteArray(), params.maxTokens, params.temperature, params.topP,
                         params.topK, params.repeatPenalty, (System.nanoTime() and 0x7fffffff).toInt(),
                     ) { bytes ->
                         val chunk = String(bytes, Charsets.UTF_8)
+                        if (tFirst == 0L) tFirst = System.nanoTime()
                         sb.append(chunk)
                         job.isActive && onToken(chunk)
                     }
                     when (rc) {
                         -2 -> throw LlmException("prompt exceeds context window (${prefs.value.nCtx} tokens)")
                         -3 -> throw LlmException("decode failed")
+                    }
+                    if (rc > 0 && tFirst > 0) {
+                        val decodeS = (System.nanoTime() - tFirst) / 1e9f
+                        _stats.value = GenStats(prompt.length, rc, (tFirst - t0) / 1_000_000, if (decodeS > 0f) rc / decodeS else 0f)
                     }
                     sb.toString()
                 } finally {
@@ -304,5 +342,11 @@ class LlamaEngine(private val context: Context, private val prefs: Prefs) {
 
     companion object {
         const val ASSET = "models/model.gguf"
+        private const val HF = "https://huggingface.co/Qwen"
+        val PRESETS = listOf(
+            ModelPreset("q3-0.6b", "Qwen3 0.6B · Q8", "$HF/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf", 639, "fastest · any phone"),
+            ModelPreset("q3-1.7b", "Qwen3 1.7B · Q8", "$HF/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf", 1830, "smarter tools · 6 GB+ RAM"),
+            ModelPreset("q3-4b", "Qwen3 4B · Q4_K_M", "$HF/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf", 2500, "best reasoning · 8 GB+ RAM"),
+        )
     }
 }

@@ -17,6 +17,8 @@ data class Settings(
     val bridgePort: Int = 8765,
     val bridgeToken: String = "",
     val modelPathOverride: String = "",
+    val preloadModel: Boolean = true,
+    val retrieval: Boolean = true,
 ) {
     companion object {
         fun defaultThreads(): Int = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
@@ -48,6 +50,8 @@ class Prefs(context: Context) {
             bridgePort = sp.getInt("bridgePort", d.bridgePort),
             bridgeToken = token,
             modelPathOverride = sp.getString("modelPathOverride", "") ?: "",
+            preloadModel = sp.getBoolean("preloadModel", d.preloadModel),
+            retrieval = sp.getBoolean("retrieval", d.retrieval),
         )
     }
 
@@ -65,6 +69,8 @@ class Prefs(context: Context) {
             .putInt("bridgePort", s.bridgePort.coerceIn(1024, 65535))
             .putString("bridgeToken", s.bridgeToken.ifBlank { randomToken() })
             .putString("modelPathOverride", s.modelPathOverride)
+            .putBoolean("preloadModel", s.preloadModel)
+            .putBoolean("retrieval", s.retrieval)
             .apply()
         _state.value = read()
     }

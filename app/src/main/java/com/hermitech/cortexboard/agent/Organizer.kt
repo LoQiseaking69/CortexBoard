@@ -26,7 +26,19 @@ import java.util.concurrent.TimeUnit
 /** The "automated organization" loop: files, tags, summarizes and extracts tasks from new notes. */
 class Organizer(private val engine: LlamaEngine, private val store: Store, private val prefs: Prefs) {
 
-    data class Plan(val folder: String?, val tags: List<String>, val summary: String, val tasks: List<String>, val links: List<String>)
+    data class Plan(
+        val folder: String?, val tags: List<String>, val summary: String, val tasks: List<String>, val links: List<String>,
+        val title: String? = null,
+    )
+
+    /** A note whose title is just its first line (quick capture / share) deserves a real title. */
+    private fun needsTitle(n: Note): Boolean {
+        val first = n.body.lineSequence().firstOrNull()?.trim()?.trimStart('#', ' ').orEmpty()
+        if (!n.folder.equals("Inbox", true)) return false // never rename notes the user has filed
+        if (n.title == "Capture" || n.title.startsWith("Untitled")) return true
+        // captured text: the title is a raw (often truncated) first sentence
+        return first.startsWith(n.title) && (first.length > 60 || n.title.split(' ').size > 6)
+    }
 
     suspend fun organize(note: Note): Plan? {
         val folders = withContext(Dispatchers.IO) { store.foldersSync() }
@@ -35,7 +47,8 @@ class Organizer(private val engine: LlamaEngine, private val store: Store, priva
         val prompt = ChatML.build(listOf(
             ChatML.Msg("system", """
 You organize a personal knowledge vault. Reply with ONE JSON object and nothing else:
-{"folder": string, "tags": [string], "summary": string, "tasks": [string], "links": [string]}
+{"title": string, "folder": string, "tags": [string], "summary": string, "tasks": [string], "links": [string]}
+- title: a short descriptive title, max 6 words
 - folder: reuse an existing folder when it fits, else a short new one (Projects, Ideas, Reference, Journal, People, Ops...)
 - tags: 1-5 lowercase tags, reuse existing ones when possible
 - summary: one line, max 20 words
@@ -58,6 +71,7 @@ EXISTING NOTES: ${titles.joinToString(" | ")}
                 ?.filter { it.length in 3..200 }?.take(8).orEmpty(),
             links = json.optJSONArray("links")?.let { a -> (0 until a.length()).map { a.optString(it).trim() } }
                 ?.filter { it in titles }?.take(5).orEmpty(),
+            title = json.optString("title").trim().trim('"').take(60).takeIf { it.length >= 3 && needsTitle(note) },
         )
     }
 
@@ -68,6 +82,7 @@ EXISTING NOTES: ${titles.joinToString(" | ")}
         val body = if (newLinks.isEmpty()) current.body
         else current.body.trimEnd() + "\n\n---\nrelated: " + newLinks.joinToString(" ") { "[[$it]]" }
         store.upsertNoteSync(current.copy(
+            title = plan.title ?: current.title,
             folder = if (current.folder.equals("Inbox", true) && plan.folder != null) plan.folder else current.folder,
             tags = (current.tags + plan.tags).distinct(),
             summary = plan.summary.ifBlank { current.summary },
@@ -100,6 +115,8 @@ EXISTING NOTES: ${titles.joinToString(" | ")}
             Transform.EXPAND -> "Expand the note into well-structured markdown with headings. Keep the author's voice and facts; do not invent facts."
             Transform.CLEAN -> "Rewrite the note as clean, concise markdown. Fix grammar, merge duplicates, keep every fact and every [[link]]."
             Transform.NEXT_STEPS -> "List the concrete next actions implied by the note as a markdown checklist (- [ ] ...)."
+            Transform.CONTINUE -> "Continue writing the note from where it ends, in the same voice and format. Output only the new text (2-6 sentences or bullets)."
+            Transform.QUESTIONS -> "Ask 3-5 sharp questions that would deepen or challenge this note, as a markdown list."
         }
         val prompt = ChatML.build(listOf(
             ChatML.Msg("system", "You are a precise writing assistant inside a notes app. $instruction Output only the result."),
@@ -108,7 +125,7 @@ EXISTING NOTES: ${titles.joinToString(" | ")}
         return ChatML.stripThinking(engine.complete(prompt, GenParams(maxTokens = prefs.value.maxTokens, temperature = 0.4f)))
     }
 
-    enum class Transform { SUMMARIZE, EXPAND, CLEAN, NEXT_STEPS }
+    enum class Transform { SUMMARIZE, EXPAND, CLEAN, NEXT_STEPS, CONTINUE, QUESTIONS }
 
     companion object {
         fun extractJson(s: String): JSONObject? {

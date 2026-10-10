@@ -32,7 +32,7 @@ class Cortex(val app: Context) {
     val engine = LlamaEngine(app, prefs)
     val vault = VaultMcpServer(store)
     val hub = McpHub(store, vault)
-    val agent = Agent(engine, hub, prefs)
+    val agent = Agent(engine, hub, prefs, store)
     val organizer = Organizer(engine, store, prefs)
     val bridge = McpBridgeServer(vault)
 
@@ -49,6 +49,8 @@ class Cortex(val app: Context) {
                 }
         }
         scope.launch { runCatching { hub.refresh() } }
+        // warm the brain so the first chat doesn't pay the load cost
+        if (prefs.value.preloadModel) scope.launch { if (engine.hasLocalModel()) engine.ensureLoaded() }
     }
 
     /** Quick capture: drop raw text into the Inbox and let the organizer file it. */

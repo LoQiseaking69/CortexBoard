@@ -52,6 +52,7 @@ fun TasksScreen(c: Cortex, onOpenNote: (Long) -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     var list by rememberSaveable { mutableStateOf("Inbox") }
     var priority by rememberSaveable { mutableStateOf(0) }
+    var dueOffset by rememberSaveable { mutableStateOf(-1) } // -1 none, else days from today
     var filter by rememberSaveable { mutableStateOf<String?>(null) }
     var showDone by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -73,7 +74,8 @@ fun TasksScreen(c: Cortex, onOpenNote: (Long) -> Unit) {
                 else -> true
             }
         }
-        scope.launch { c.store.addTask(TaskItem(title = words.joinToString(" "), list = l, priority = p)) }
+        val due = if (dueOffset >= 0) LocalDate.now().plusDays(dueOffset.toLong()).toEpochDay() else null
+        scope.launch { c.store.addTask(TaskItem(title = words.joinToString(" "), list = l, priority = p, due = due)) }
         input = ""
     }
 
@@ -88,7 +90,12 @@ fun TasksScreen(c: Cortex, onOpenNote: (Long) -> Unit) {
             Spacer(Modifier.width(6.dp))
             NeonButton("ADD", Neon.Lime, enabled = input.isNotBlank(), onClick = ::add)
         }
-        LazyRow(Modifier.padding(top = 8.dp)) {
+        LazyRow(Modifier.padding(top = 6.dp)) {
+            listOf(-1 to "NO DATE", 0 to "TODAY", 1 to "TOMORROW", 7 to "+1 WEEK").forEach { (d, label) ->
+                item { NeonChip("⏱ $label", dueOffset == d, Neon.Amber) { dueOffset = d } }
+            }
+        }
+        LazyRow(Modifier.padding(top = 6.dp)) {
             item { NeonChip("ALL", filter == null, Neon.Lime) { filter = null } }
             items(lists) { l -> NeonChip("@$l", filter == l, Neon.Lime) { filter = l; list = l } }
         }

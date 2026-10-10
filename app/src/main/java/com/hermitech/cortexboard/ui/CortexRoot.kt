@@ -27,6 +27,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -54,7 +60,7 @@ enum class Tab(val label: String, val glyph: String, val accent: Color) {
 fun CortexRoot(c: Cortex) {
     var tab by rememberSaveable { mutableStateOf(Tab.VAULT) }
     var openNote by rememberSaveable { mutableStateOf<Long?>(null) }
-    val brain = remember { BrainState() }
+    val brain = remember { BrainState(c) }
 
     BackHandler(enabled = openNote != null || tab != Tab.VAULT) {
         if (openNote != null) openNote = null else tab = Tab.VAULT
@@ -71,7 +77,7 @@ fun CortexRoot(c: Cortex) {
                     Tab.VAULT -> VaultScreen(c, onOpen = { openNote = it })
                     Tab.TASKS -> TasksScreen(c, onOpenNote = { openNote = it })
                     Tab.BOARDS -> BoardsScreen(c)
-                    Tab.BRAIN -> BrainScreen(c, brain)
+                    Tab.BRAIN -> BrainScreen(c, brain, onOpenSys = { tab = Tab.SYS })
                     Tab.SYS -> SysScreen(c)
                 }
             }
@@ -103,9 +109,19 @@ private fun TopBar(c: Cortex, tab: Tab) {
         PulseDot(color, busy)
         Text(" $label", color = color, style = MaterialTheme.typography.labelSmall)
     }
+    // divider with a slow scan pulse travelling across it
+    val scan = rememberInfiniteTransition(label = "scan")
+    val x by scan.animateFloat(-0.2f, 1.2f, infiniteRepeatable(tween(3200, easing = LinearEasing)), label = "x")
     Box(
-        Modifier.fillMaxWidth().height(1.dp)
-            .background(Brush.horizontalGradient(listOf(Color.Transparent, tab.accent, Color.Transparent)))
+        Modifier.fillMaxWidth().height(2.dp)
+            .background(Brush.horizontalGradient(listOf(Color.Transparent, tab.accent.copy(alpha = 0.6f), Color.Transparent)))
+            .drawBehind {
+                val cx = size.width * x
+                drawRect(
+                    Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = 0.9f), Color.Transparent),
+                        startX = cx - 60f, endX = cx + 60f),
+                )
+            }
     )
 }
 

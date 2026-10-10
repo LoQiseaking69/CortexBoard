@@ -26,7 +26,8 @@ class VaultMcpServer(private val store: Store) : McpToolProvider {
     private val handlers: Map<String, Handler> = listOf(
         tool("search_notes", "Full-text search the vault. Returns titles, folders, tags and a snippet.",
             schema { str("query", "keywords", true); int("limit", "max results, default 8") }) { a ->
-            val hits = store.searchSync(a.getString("query"), a.optInt("limit", 8).coerceIn(1, 25))
+            val lim = a.optInt("limit", 8).coerceIn(1, 25)
+            val hits = store.searchSync(a.getString("query"), lim).ifEmpty { store.searchAnySync(a.getString("query"), lim) }
             if (hits.isEmpty()) "no matches" else hits.joinToString("\n") { n ->
                 "- ${n.title} [${n.folder}] ${n.tags.joinToString(" ") { "#$it" }} :: ${snippet(n)}"
             }
