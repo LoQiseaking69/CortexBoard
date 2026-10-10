@@ -128,13 +128,17 @@ class Store(context: Context) {
     }
 
     fun searchSync(query: String, limit: Int = 20): List<Note> {
-        val terms = query.split(Regex("\\s+")).map { it.replace(Regex("[^\\p{L}\\p{N}_-]"), "") }
-            .filter { it.isNotEmpty() }
+        // Only letters/digits survive: FTS4 treats '-', '"', '*', ':' etc. as query operators.
+        val terms = query.replace(Regex("[^\\p{L}\\p{N}]+"), " ").split(' ').filter { it.isNotEmpty() }.take(8)
         if (terms.isEmpty()) return emptyList()
         val match = terms.joinToString(" ") { "$it*" }
-        val ids = db.rawQuery(
-            "SELECT docid FROM notes_fts WHERE notes_fts MATCH ? LIMIT ?", arrayOf(match, limit.toString())
-        ).use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
+        val ids = try {
+            db.rawQuery(
+                "SELECT docid FROM notes_fts WHERE notes_fts MATCH ? LIMIT ?", arrayOf(match, limit.toString())
+            ).use { c -> buildList<Long> { while (c.moveToNext()) add(c.getLong(0)) } }
+        } catch (_: android.database.sqlite.SQLiteException) {
+            return emptyList()
+        }
         if (ids.isEmpty()) return emptyList()
         val byId = notesWhere("id IN (${ids.joinToString(",")})", emptyArray()).associateBy { it.id }
         return ids.mapNotNull { byId[it] }
