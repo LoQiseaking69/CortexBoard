@@ -1,0 +1,165 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: "GGUF to bake into the APK (Hugging Face resolve URL)"
+        required: false
+        default: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf"
+      model_name:
+        description: "Display name for the bundled model"
+        required: false
+        default: "Qwen3-0.6B-Q8_0"
+      bundle_model:
+        description: "Bundle the model (false = lite APK, import GGUF in-app)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_TAG: b11549
+  NDK_VERSION: 29.0.13113456
+  CMAKE_VERSION: 3.31.6
+  MODEL_URL: ${{ inputs.model_url || 'https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf' }}
+  MODEL_NAME: ${{ inputs.model_name || 'Qwen3-0.6B-Q8_0' }}
+  BUNDLE_MODEL: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_model }}
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages (platform, NDK, CMake)
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Cache llama.cpp source
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/llama.cpp
+          key: llama-src-${{ env.LLAMA_TAG }}
+
+      - name: Fetch llama.cpp ${{ env.LLAMA_TAG }}
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp.git third_party/llama.cpp
+
+      - name: Model cache key
+        id: model-key
+        run: echo "key=gguf-$(echo -n "$MODEL_URL" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache model weights
+        if: env.BUNDLE_MODEL == 'true'
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/models/model.gguf
+          key: ${{ steps.model-key.outputs.key }}
+
+      - name: Download ${{ env.MODEL_NAME }}
+        if: env.BUNDLE_MODEL == 'true' && steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p app/src/main/assets/models
+          curl -L --fail --retry 4 --retry-delay 10 -o app/src/main/assets/models/model.gguf "$MODEL_URL"
+
+      - name: Verify GGUF
+        if: env.BUNDLE_MODEL == 'true'
+        run: |
+          f=app/src/main/assets/models/model.gguf
+          magic=$(head -c 4 "$f")
+          [ "$magic" = "GGUF" ] || { echo "::error::downloaded file is not GGUF"; exit 1; }
+          ls -lh "$f"
+          sha256sum "$f" | tee model.sha256
+
+      - name: Release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "CB_KEYSTORE_PATH=$RUNNER_TEMP/release.jks"
+              echo "CB_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+              echo "CB_KEY_ALIAS=$KEY_ALIAS"
+              echo "CB_KEY_PASSWORD=$KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "Signing with release keystore"
+          else
+            echo "::warning::No KEYSTORE_BASE64 secret — APK is signed with an ephemeral debug key (updates will need a reinstall)."
+          fi
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="0.1.${GITHUB_RUN_NUMBER}"; fi
+          echo "name=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease \
+            -PmodelName="$MODEL_NAME" \
+            -PversionName="${{ steps.ver.outputs.name }}" \
+            -PversionCode="${GITHUB_RUN_NUMBER}" \
+            --stacktrace
+
+      - name: Collect APK
+        id: apk
+        run: |
+          suffix=$([ "$BUNDLE_MODEL" = "true" ] && echo "$MODEL_NAME" || echo "lite")
+          out="CortexBoard-${{ steps.ver.outputs.name }}-${suffix}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$out"
+          sha256sum "$out" > "$out.sha256"
+          ls -lh "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          {
+            echo "### CortexBoard ${{ steps.ver.outputs.name }}"
+            echo "- model: \`$suffix\`"
+            echo "- llama.cpp: \`$LLAMA_TAG\`"
+            echo "- size: $(du -h "$out" | cut -f1)"
+            echo "- sha256: \`$(cut -d' ' -f1 "$out.sha256")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.file }}
+          path: |
+            ${{ steps.apk.outputs.file }}
+            ${{ steps.apk.outputs.file }}.sha256
+          compression-level: 0
+          retention-days: 14
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.apk.outputs.file }}
+            ${{ steps.apk.outputs.file }}.sha256
+          generate_release_notes: true

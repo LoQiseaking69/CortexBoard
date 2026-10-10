@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">CortexBoard</string>
+    <string name="capture_label">Capture to Cortex</string>
+</resources>

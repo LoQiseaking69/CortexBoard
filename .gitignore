@@ -1,0 +1,14 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.cxx/
+.externalNativeBuild/
+captures/
+*.keystore
+*.jks
+keystore.properties
+# model weights are injected at CI time, never committed
+app/src/main/assets/models/*.gguf
+third_party/

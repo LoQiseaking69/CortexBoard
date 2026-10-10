@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Neon hex-cortex glyph: a hexagon frame with a node graph inside. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#00F0FF" android:strokeWidth="3"
+        android:pathData="M54,26 L78,40 L78,68 L54,82 L30,68 L30,40 Z" />
+    <path android:strokeColor="#FF2BD6" android:strokeWidth="2.2"
+        android:pathData="M54,42 L66,50 M54,42 L42,52 M42,52 L54,66 M66,50 L54,66 M66,50 L42,52" />
+    <path android:fillColor="#00F0FF" android:pathData="M54,42m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+    <path android:fillColor="#39FF88" android:pathData="M66,50m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0" />
+    <path android:fillColor="#FF2BD6" android:pathData="M42,52m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0" />
+    <path android:fillColor="#FFB000" android:pathData="M54,66m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+</vector>

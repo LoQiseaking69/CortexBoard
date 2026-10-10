@@ -1,0 +1,10 @@
+<resources>
+    <color name="void_black">#FF040609</color>
+    <color name="neon_cyan">#FF00F0FF</color>
+    <style name="Theme.Cortex" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/void_black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:colorAccent">@color/neon_cyan</item>
+    </style>
+</resources>
