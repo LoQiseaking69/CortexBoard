@@ -53,7 +53,9 @@ curl -s http://127.0.0.1:8765/mcp -H "Authorization: Bearer $TOKEN" \
 
 ## Build
 
-CI does everything: `.github/workflows/android.yml` installs NDK 29 + CMake, clones llama.cpp at the pinned tag, downloads the GGUF, bakes it into `assets/models/model.gguf`, builds `assembleRelease` and uploads the APK as an artifact. Pushing a `v*` tag also publishes a GitHub Release.
+CI does everything: `.github/workflows/android.yml` installs NDK 29 + CMake, clones llama.cpp at the pinned tag, downloads the GGUF, bakes it into `assets/models/model.gguf`, builds `assembleRelease` and uploads the APK as an artifact.
+
+**Releasing:** bump `VERSION` on `main` (e.g. `0.1.0` → `0.2.0`). CI tags `v<version>` and publishes a GitHub Release with the APK attached. Pushing a `v*` tag manually works too.
 
 - **Default model**: `Qwen/Qwen3-0.6B-GGUF` → `Qwen3-0.6B-Q8_0.gguf` (~640 MB APK). 
 - **Other models**: Actions → *Build APK* → *Run workflow* → set `model_url` / `model_name` (e.g. a Qwen3-1.7B or 4B GGUF for stronger phones).
